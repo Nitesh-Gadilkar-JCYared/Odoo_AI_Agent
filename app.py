@@ -9,12 +9,7 @@ from odoo_connector import OdooConnector
 from ai_engine import OdooAIEngine
 from vector_store import VectorStore
 
-# ── Page setup ─────────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Odoo AI",
-    page_icon="🤖",
-    layout="wide",          # wide for side panels
-)
+st.set_page_config(page_title="Odoo AI", page_icon="🤖", layout="wide")
 
 st.markdown("""
 <style>
@@ -38,7 +33,80 @@ html, body, .stApp { background: #0d0f14 !important; color: #e2e8f0 !important; 
     padding: 0.5rem 1rem !important; width: 100% !important;
 }
 
-/* Chat */
+/* ── HIDE the broken Streamlit expander entirely — we use st.checkbox trick ── */
+/* Hide the Material icon font text that renders as "_arrow_right" */
+[data-testid="stExpander"] details summary svg,
+[data-testid="stExpander"] details summary span[data-testid] {
+    display: none !important;
+}
+/* Full expander reset */
+[data-testid="stExpander"] details {
+    background: #161b22 !important;
+    border: 1px solid #2a3045 !important;
+    border-radius: 8px !important;
+    margin-top: 6px !important;
+    overflow: hidden !important;
+}
+[data-testid="stExpander"] details summary {
+    padding: 0 !important;
+    margin: 0 !important;
+    list-style: none !important;
+    cursor: pointer !important;
+}
+[data-testid="stExpander"] details summary::-webkit-details-marker { display: none !important; }
+/* The label text that Streamlit puts in a <p> inside summary */
+[data-testid="stExpander"] details summary p {
+    font-size: 0.82rem !important;
+    font-weight: 500 !important;
+    color: #64748b !important;
+    padding: 8px 14px !important;
+    margin: 0 !important;
+    line-height: 1.4 !important;
+    /* Push text right so it clears any residual icon space */
+    padding-left: 32px !important;
+    position: relative !important;
+    background: #161b22 !important;
+    border-radius: 8px !important;
+    user-select: none !important;
+}
+/* Custom arrow drawn with ::before — replaces the broken Material icon */
+[data-testid="stExpander"] details summary p::before {
+    content: "▶" !important;
+    position: absolute !important;
+    left: 10px !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    font-size: 0.6rem !important;
+    color: #475569 !important;
+    transition: transform 0.15s !important;
+}
+[data-testid="stExpander"] details[open] summary p::before {
+    content: "▼" !important;
+}
+[data-testid="stExpander"] details summary:hover p {
+    color: #94a3b8 !important;
+    background: #1a1e2a !important;
+}
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] {
+    padding: 8px 14px 12px !important;
+}
+
+/* Sidebar expander same treatment */
+[data-testid="stSidebar"] [data-testid="stExpander"] details {
+    background: #1a1e2a !important;
+    border-color: #2a3045 !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] details summary p {
+    background: #1a1e2a !important;
+    color: #64748b !important;
+    font-size: 0.8rem !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] details summary:hover p {
+    background: #1e2535 !important;
+    color: #94a3b8 !important;
+}
+
+/* Chat bubbles */
 [data-testid="stChatMessageContent"] {
     background: #1a1e2a !important; border: 1px solid #2a3045 !important;
     border-radius: 14px !important; padding: 0.8rem 1.1rem !important;
@@ -54,7 +122,7 @@ html, body, .stApp { background: #0d0f14 !important; color: #e2e8f0 !important; 
 [data-testid="stChatInput"] > div:focus-within { border-color:#3b82f6 !important; }
 [data-testid="stChatInput"] button { background:#3b82f6 !important; border-radius:8px !important; }
 
-/* Metric cards */
+/* Stat cards */
 .stat-card { background:#1a1e2a; border:1px solid #2a3045; border-radius:10px; padding:10px; text-align:center; margin-bottom:6px; }
 .stat-num  { font-size:1.4rem; font-weight:700; }
 .stat-lbl  { font-size:0.65rem; color:#475569; text-transform:uppercase; letter-spacing:0.06em; }
@@ -66,25 +134,25 @@ html, body, .stApp { background: #0d0f14 !important; color: #e2e8f0 !important; 
 
 # ── Session state ──────────────────────────────────────────────────────────────
 defaults = {
-    "messages":   [],
-    "engine":     None,
-    "vs":         None,
-    "connected":  False,
-    "session_id": None,
-    "log_ids":    [],   # parallel to messages — None for user msgs, str for assistant
+    "messages":        [],
+    "engine":          None,
+    "vs":              None,
+    "connected":       False,
+    "session_id":      None,
+    "log_ids":         [],
+    "conn_expanded":   True,   # track sidebar connection panel open/close
 }
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ── Init VectorStore once ──────────────────────────────────────────────────────
 @st.cache_resource
 def get_vector_store():
     return VectorStore(path="./chroma_db")
 
 vs = get_vector_store()
 
-# ── Auto-connect from .env ─────────────────────────────────────────────────────
+# ── Auto-connect ───────────────────────────────────────────────────────────────
 if not st.session_state.connected:
     _u = os.getenv("ODOO_URL",""); _d = os.getenv("ODOO_DB","")
     _n = os.getenv("ODOO_USER",""); _p = os.getenv("ODOO_PASSWORD","")
@@ -96,17 +164,19 @@ if not st.session_state.connected:
                 engine = OdooAIEngine(conn, _g, vector_store=vs)
                 sid    = vs.start_session(user=_n, llm_provider="groq")
                 engine.set_session(sid)
-                st.session_state.engine     = engine
-                st.session_state.vs         = vs
-                st.session_state.session_id = sid
-                st.session_state.connected  = True
+                st.session_state.engine          = engine
+                st.session_state.vs              = vs
+                st.session_state.session_id      = sid
+                st.session_state.connected       = True
+                st.session_state.conn_expanded   = False
         except Exception:
             pass
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR — connection + stats
+# SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
+    # Logo
     st.markdown("""
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:1.2rem;
                 padding-bottom:1rem;border-bottom:1px solid #1e2330">
@@ -118,7 +188,7 @@ with st.sidebar:
         </div>
     </div>""", unsafe_allow_html=True)
 
-    # Status
+    # Status badge
     dot_color = "#10b981" if st.session_state.connected else "#ef4444"
     dot_label = "Connected · Logging to ChromaDB" if st.session_state.connected else "Not connected"
     st.markdown(f"""<div style="display:flex;align-items:center;gap:7px;
@@ -129,15 +199,15 @@ with st.sidebar:
         <div style="width:6px;height:6px;background:{dot_color};border-radius:50%"></div>
         {dot_label}</div>""", unsafe_allow_html=True)
 
-    # Credentials
-    with st.expander("⚙️ Connection", expanded=not st.session_state.connected):
-        odoo_url  = st.text_input("Odoo URL",    value=os.getenv("ODOO_URL",""),      placeholder="https://your-odoo.com", label_visibility="collapsed")
-        odoo_db   = st.text_input("Database",    value=os.getenv("ODOO_DB",""),       placeholder="database",              label_visibility="collapsed")
-        odoo_user = st.text_input("Username",    value=os.getenv("ODOO_USER",""),     placeholder="admin",                 label_visibility="collapsed")
-        odoo_pass = st.text_input("Password",    value=os.getenv("ODOO_PASSWORD",""), placeholder="password", type="password", label_visibility="collapsed")
-        groq_key  = st.text_input("Groq API Key",value=os.getenv("GROQ_API_KEY",""), placeholder="gsk_...",  type="password", label_visibility="collapsed")
+    # ── Connection panel using st.expander (icon fixed via CSS above) ──────────
+    with st.expander("Connection Settings", expanded=st.session_state.conn_expanded):
+        odoo_url  = st.text_input("url",  value=os.getenv("ODOO_URL",""),      placeholder="https://your-odoo.com", label_visibility="collapsed")
+        odoo_db   = st.text_input("db",   value=os.getenv("ODOO_DB",""),       placeholder="database name",         label_visibility="collapsed")
+        odoo_user = st.text_input("user", value=os.getenv("ODOO_USER",""),     placeholder="username / email",      label_visibility="collapsed")
+        odoo_pass = st.text_input("pass", value=os.getenv("ODOO_PASSWORD",""), placeholder="password", type="password", label_visibility="collapsed")
+        groq_key  = st.text_input("groq", value=os.getenv("GROQ_API_KEY",""),  placeholder="Groq API key (gsk_...)", type="password", label_visibility="collapsed")
 
-        if st.button("🔌 Connect"):
+        if st.button("Connect"):
             if not all([odoo_url, odoo_db, odoo_user, odoo_pass, groq_key]):
                 st.error("Fill in all fields.")
             else:
@@ -148,59 +218,51 @@ with st.sidebar:
                             engine = OdooAIEngine(conn, groq_key, vector_store=vs)
                             sid    = vs.start_session(user=odoo_user, llm_provider="groq")
                             engine.set_session(sid)
-                            st.session_state.engine     = engine
-                            st.session_state.vs         = vs
-                            st.session_state.session_id = sid
-                            st.session_state.connected  = True
-                            st.session_state.messages   = []
-                            st.session_state.log_ids    = []
+                            st.session_state.engine        = engine
+                            st.session_state.vs            = vs
+                            st.session_state.session_id    = sid
+                            st.session_state.connected     = True
+                            st.session_state.conn_expanded = False
+                            st.session_state.messages      = []
+                            st.session_state.log_ids       = []
                             st.rerun()
                         else:
                             st.error("Odoo connection failed.")
                     except Exception as e:
                         st.error(f"Error: {e}")
 
-    # Stats
+    # Stats section
     if st.session_state.connected:
         st.markdown("---")
-        st.markdown('<p style="font-size:0.7rem;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">📊 All-Time Stats</p>', unsafe_allow_html=True)
+        st.markdown('<p style="font-size:0.7rem;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px">All-Time Stats</p>', unsafe_allow_html=True)
         stats = vs.get_stats()
         if stats:
             c1, c2 = st.columns(2)
+            acc   = stats.get("accuracy", 0)
+            acc_c = "#10b981" if acc >= 85 else "#f59e0b" if acc >= 60 else "#ef4444"
             with c1:
-                acc = stats.get("accuracy", 0)
-                acc_c = "#10b981" if acc >= 85 else "#f59e0b" if acc >= 60 else "#ef4444"
                 st.markdown(f'<div class="stat-card"><div class="stat-num" style="color:#3b82f6">{stats.get("total",0)}</div><div class="stat-lbl">Total</div></div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="stat-card"><div class="stat-num" style="color:#10b981">{stats.get("correct",0)}</div><div class="stat-lbl">✅ Correct</div></div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="stat-card"><div class="stat-num" style="color:#10b981">{stats.get("correct",0)}</div><div class="stat-lbl">Correct</div></div>', unsafe_allow_html=True)
             with c2:
                 st.markdown(f'<div class="stat-card"><div class="stat-num" style="color:{acc_c}">{acc}%</div><div class="stat-lbl">Accuracy</div></div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="stat-card"><div class="stat-num" style="color:#ef4444">{stats.get("wrong",0)}</div><div class="stat-lbl">❌ Wrong</div></div>', unsafe_allow_html=True)
-
-            training_count = stats.get("training", 0)
-            st.markdown(f'<div class="stat-card" style="margin-top:4px"><div class="stat-num" style="color:#a78bfa">{training_count}</div><div class="stat-lbl">📚 Training Examples</div></div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="stat-card"><div class="stat-num" style="color:#ef4444">{stats.get("wrong",0)}</div><div class="stat-lbl">Wrong</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="stat-card" style="margin-top:4px"><div class="stat-num" style="color:#a78bfa">{stats.get("training",0)}</div><div class="stat-lbl">Training Examples</div></div>', unsafe_allow_html=True)
 
         st.markdown("---")
-
-        # Export training data
-        if st.button("📥 Export Training JSONL"):
+        if st.button("Export Training JSONL"):
             jsonl = vs.export_training_jsonl()
             if jsonl:
-                st.download_button(
-                    label    = "⬇️ Download training.jsonl",
-                    data     = jsonl,
-                    file_name= "training_data.jsonl",
-                    mime     = "application/jsonlines",
-                )
+                st.download_button("Download training.jsonl", data=jsonl, file_name="training_data.jsonl", mime="application/jsonlines")
             else:
-                st.info("No training data yet. Rate answers as ❌ Wrong and add corrected queries.")
+                st.info("No corrected training data yet.")
 
-        if st.button("🗑️ Clear Chat"):
+        if st.button("Clear Chat"):
             st.session_state.messages = []
             st.session_state.log_ids  = []
             st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MAIN LAYOUT — chat (left) + semantic search panel (right)
+# MAIN LAYOUT
 # ══════════════════════════════════════════════════════════════════════════════
 col_chat, col_panel = st.columns([3, 1.2])
 
@@ -223,7 +285,6 @@ with col_chat:
         </div>""", unsafe_allow_html=True)
         st.stop()
 
-    # Welcome
     if not st.session_state.messages:
         st.markdown("""<div style="background:#1a1e2a;border:1px solid #2a3045;border-radius:14px;
             padding:1.3rem;margin-bottom:1rem;text-align:center">
@@ -234,12 +295,11 @@ with col_chat:
                 <span style="color:#60a5fa">"Top customers this month"</span> ·
                 <span style="color:#60a5fa">"Low stock products"</span><br/>
                 <span style="font-size:0.7rem;color:#334155;margin-top:4px;display:block">
-                    Rate each answer ✅ / ⚠️ / ❌ — wrong answers build your training dataset
+                    Rate each answer — wrong answers build your training dataset
                 </span>
             </div>
         </div>""", unsafe_allow_html=True)
 
-    # Chat history
     msg_list    = st.session_state.messages
     log_id_list = st.session_state.log_ids
 
@@ -256,9 +316,8 @@ with col_chat:
                 with st.chat_message("assistant", avatar="🤖"):
                     st.markdown(a_msg["content"])
 
-                    # Query viewer
                     if a_msg.get("query"):
-                        with st.expander("👁 View Generated Query"):
+                        with st.expander("View Generated Query"):
                             st.code(
                                 json.dumps(a_msg["query"], indent=2)
                                 if isinstance(a_msg["query"], dict)
@@ -266,7 +325,6 @@ with col_chat:
                                 language="json"
                             )
 
-                    # Feedback buttons
                     if log_id:
                         fb = a_msg.get("feedback")
                         if not fb:
@@ -290,24 +348,23 @@ with col_chat:
                             icons = {"correct":"✅ Correct","partial":"⚠️ Partial","wrong":"❌ Wrong"}
                             st.caption(f"Rated: {icons.get(fb, fb)}")
 
-                        # Wrong → show corrected query input
                         if a_msg.get("feedback") == "wrong":
-                            with st.expander("✏️ Add Corrected Query (for training)"):
+                            with st.expander("Add Corrected Query"):
                                 corrected = st.text_area(
-                                    "Paste the correct JSON query:",
+                                    "correct_q", label_visibility="collapsed",
                                     key=f"fix_{log_id}",
                                     placeholder='{"operation":"search_read","model":"sale.order",...}',
                                     height=100,
                                 )
-                                note = st.text_input("What was wrong?", key=f"note_{log_id}")
-                                if st.button("💾 Save to Training Data", key=f"save_{log_id}"):
+                                note = st.text_input("note", label_visibility="collapsed",
+                                                     placeholder="What was wrong?", key=f"note_{log_id}")
+                                if st.button("Save to Training Data", key=f"save_{log_id}"):
                                     vs.submit_feedback(log_id, "wrong", note=note, corrected=corrected)
-                                    st.success("Saved to training_data collection!")
+                                    st.success("Saved!")
                 i += 1
         else:
             i += 1
 
-    # Input
     if prompt := st.chat_input("Ask anything about your Odoo data..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         st.session_state.log_ids.append(None)
@@ -325,24 +382,20 @@ with col_chat:
             st.markdown(answer)
 
             if query:
-                with st.expander("👁 View Generated Query"):
+                with st.expander("View Generated Query"):
                     st.code(
-                        json.dumps(query, indent=2)
-                        if isinstance(query, dict) else str(query),
+                        json.dumps(query, indent=2) if isinstance(query, dict) else str(query),
                         language="json"
                     )
 
             if log_id:
                 cols = st.columns([1, 1, 1, 5])
                 with cols[0]:
-                    if st.button("✅", key=f"ok_{log_id}_n"):
-                        vs.submit_feedback(log_id, "correct")
+                    if st.button("✅", key=f"ok_{log_id}_n"): vs.submit_feedback(log_id, "correct")
                 with cols[1]:
-                    if st.button("⚠️", key=f"pt_{log_id}_n"):
-                        vs.submit_feedback(log_id, "partial")
+                    if st.button("⚠️", key=f"pt_{log_id}_n"): vs.submit_feedback(log_id, "partial")
                 with cols[2]:
-                    if st.button("❌", key=f"no_{log_id}_n"):
-                        vs.submit_feedback(log_id, "wrong")
+                    if st.button("❌", key=f"no_{log_id}_n"): vs.submit_feedback(log_id, "wrong")
 
         st.session_state.messages.append({
             "role": "assistant", "content": answer,
@@ -351,36 +404,30 @@ with col_chat:
         st.session_state.log_ids.append(log_id)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RIGHT PANEL — semantic search on past questions
+# RIGHT PANEL
 # ══════════════════════════════════════════════════════════════════════════════
 with col_panel:
     st.markdown("""<div style="font-size:0.8rem;font-weight:600;color:#94a3b8;
         text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px;
         padding-bottom:8px;border-bottom:1px solid #1e2330">
-        🔍 Similar Past Questions
+        Similar Past Questions
     </div>""", unsafe_allow_html=True)
 
     if not st.session_state.connected:
         st.markdown('<p style="font-size:0.78rem;color:#334155">Connect first.</p>', unsafe_allow_html=True)
     elif vs.query_logs.count() == 0:
-        st.markdown('<p style="font-size:0.78rem;color:#334155">No history yet. Ask some questions first.</p>', unsafe_allow_html=True)
+        st.markdown('<p style="font-size:0.78rem;color:#334155">No history yet.</p>', unsafe_allow_html=True)
     else:
-        search_q = st.text_input(
-            "Search",
-            placeholder="e.g. unpaid invoices",
-            label_visibility="collapsed",
-            key="semantic_search",
-        )
+        search_q = st.text_input("Search", placeholder="e.g. unpaid invoices",
+                                  label_visibility="collapsed", key="semantic_search")
         show_all = st.toggle("Include unrated", value=False)
 
         if search_q:
-            hits = vs.find_similar_questions(
-                search_q, n=6, only_correct=not show_all
-            )
+            hits = vs.find_similar_questions(search_q, n=6, only_correct=not show_all)
             if hits:
                 for h in hits:
-                    sim_pct = int(h["similarity"] * 100)
-                    fb_icon = {"correct":"✅","partial":"⚠️","wrong":"❌","pending":"🕐"}.get(h["feedback"],"")
+                    sim_pct   = int(h["similarity"] * 100)
+                    fb_icon   = {"correct":"✅","partial":"⚠️","wrong":"❌","pending":"🕐"}.get(h["feedback"],"")
                     sim_color = "#10b981" if sim_pct > 75 else "#f59e0b" if sim_pct > 50 else "#64748b"
                     st.markdown(f"""<div style="background:#1a1e2a;border:1px solid #2a3045;
                         border-radius:10px;padding:10px 12px;margin-bottom:8px">
@@ -388,14 +435,13 @@ with col_panel:
                             {fb_icon} {h['question'][:80]}{'…' if len(h['question'])>80 else ''}
                         </div>
                         <div style="font-size:0.7rem;color:#475569">
-                            {h.get('model','') or '—'}  ·
+                            {h.get('model','') or '—'} ·
                             <span style="color:{sim_color};font-weight:600">{sim_pct}% match</span>
                         </div>
                     </div>""", unsafe_allow_html=True)
             else:
                 st.markdown('<p style="font-size:0.78rem;color:#334155">No similar questions found.</p>', unsafe_allow_html=True)
         else:
-            # Show recent logs when no search
             st.markdown('<p style="font-size:0.72rem;color:#475569;margin-bottom:8px">Recent queries:</p>', unsafe_allow_html=True)
             recent = vs.get_recent_logs(n=8)
             for log in recent:
